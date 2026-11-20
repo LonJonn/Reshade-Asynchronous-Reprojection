@@ -19,6 +19,7 @@
 #include "addon/reshade_feed.hpp"
 #include "addon/output_effects.hpp"
 #include "addon/frame_cap.hpp"
+#include "addon/adapters/host.hpp"
 #include "shared/dev_keys.hpp"
 #include <d3d12.h>
 #include <dxgi1_2.h>
@@ -814,7 +815,7 @@ bool on_tag_copy(command_list* cmd, resource, resource) {
 void on_execute_command_list(command_queue*, command_list* cmd) {
     if (g_producer && cmd) g_producer->on_execute(cmd->get_native());
 }
-void on_present(command_queue*, swapchain* chain, const rect*, const rect*, uint32_t, const rect*) {
+void on_present(command_queue* queue, swapchain* chain, const rect*, const rect*, uint32_t, const rect*) {
     // (a swap chain made after the followed one presents: it is the game's now - see g_waiting_chain)
     if (chain && chain == g_waiting_chain.load()) {
         fw::diag_log(reshade::log::level::info, "XPAR: the newer swap chain presents: followed from now on");
@@ -824,7 +825,8 @@ void on_present(command_queue*, swapchain* chain, const rect*, const rect*, uint
     if (g_producer && g_producer->shared() && chain &&
         reinterpret_cast<std::uint64_t>(chain->get_hwnd()) == g_producer->shared()->game_hwnd) {
         // (diagnostics: the draws of one game frame, on Ctrl+Shift+D - see ui_probe.hpp)
-        fw::ui_probe::on_present(chain, g_producer->shared()->settings.record_diagnostics != 0);
+        command_list* immediate = queue && queue->get_device()->get_api() == device_api::d3d11 ? queue->get_immediate_command_list() : nullptr;
+        fw::ui_probe::on_present(chain, g_producer->shared()->settings.record_diagnostics != 0, immediate ? immediate->get_native() : 0);
         fw::g_diag = g_producer->shared()->settings.record_diagnostics != 0;  // (the add-on's log lines - see diag.hpp)
         fw::ui_layer::on_present(chain);
         {
@@ -1618,6 +1620,16 @@ void draw_overlay(effect_runtime*) {
             reshade::set_config_value(nullptr, "FrameWarp", "RecordDiagnostics", record ? "1" : "0");
         }
         hint("Frame-by-frame recordings in the FrameWarp\\logs folder; remembered for this game.");
+        const auto adapter = fw::adapters::host::status();
+        if (!adapter.name) ImGui::TextDisabled("Game adapter: none for this game");
+        else {
+            std::string caps;
+            for (int bit = 0; bit < fw::adapters::kCapabilityCount; ++bit)
+                if (adapter.offered & (1u << bit))
+                    caps += std::string(caps.empty() ? "" : ", ") + fw::adapters::capability_name(bit) + ((adapter.enabled & (1u << bit)) ? "" : " (off)");
+            ImGui::Text("Game adapter: %s - %s (%s)", adapter.name, fw::adapters::health_name(adapter.health), caps.c_str());
+        }
+        hint("What FrameWarp is told about this game's engine, checked before it is used ([FrameWarp] Adapter=off turns it off).");
     }
 
     if (ImGui::CollapsingHeader("FSR diagnostics (AMD FidelityFX 2 / 3.0 / 3.1 / 4)")) {
@@ -1755,8 +1767,10 @@ void register_callbacks() {
     reshade::register_event<reshade::addon_event::create_swapchain>(on_create_swapchain);
     reshade::register_event<reshade::addon_event::set_fullscreen_state>(on_set_fullscreen_state);
     reshade::register_overlay("XPAR", draw_overlay);
+    fw::adapters::host::init();  // (registers nothing unless the game has an adapter - adapters/host.cpp)
 }
 void unregister_callbacks() {
+    fw::adapters::host::shutdown();
     reshade::unregister_overlay("XPAR", draw_overlay);
     reshade::unregister_event<reshade::addon_event::set_fullscreen_state>(on_set_fullscreen_state);
     reshade::unregister_event<reshade::addon_event::create_swapchain>(on_create_swapchain);
