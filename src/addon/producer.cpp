@@ -1186,8 +1186,10 @@ RWTexture2D<unorm float> cover : register(u0);
 void Producer::on_hud_before_d3d11(ID3D11Resource* picture, std::uint32_t kind, ID3D11DeviceContext* context) {
     std::lock_guard lock(mutex_);
     if (!ready() || !d11_ || !context) return;
-    if (kind == 1) {  // (no HUD this frame; a copy taken this frame comes first)
-        if (!d11_before_taken_) d11_none_ = true;
+    // (kinds 0-3 come from ui_layer's third pattern; 3-5 from a game adapter that knows its game draws the HUD straight onto
+    // the back buffer - adapters/adapter.hpp HudBefore, e.g. adapters/xray.cpp)
+    if (kind == 1 || kind == 5) {  // (no HUD this frame; a copy taken this frame comes first. 5: on a back buffer)
+        if (!d11_before_taken_) { d11_none_ = true; d11_none_bb_ = kind == 5; }
         return;
     }
     if (kind == 2) {
@@ -1195,10 +1197,14 @@ void Producer::on_hud_before_d3d11(ID3D11Resource* picture, std::uint32_t kind, 
         return;
     }
     if (kind == 3) {
-        d11_before_taken_ = d11_confirmed_ = false;
+        if (picture && d11_picture_ && reinterpret_cast<ID3D11Resource*>(picture) != d11_picture_.Get()) return;  // (another copy's)
+        d11_before_taken_ = d11_confirmed_ = d11_bb_ = false;
         d11_picture_.Reset();
         return;
     }
+    if (kind == 4 && d11_before_taken_ && !d11_bb_) return;  // (the third pattern's copy this frame comes first)
+    // (0: the third pattern's copy, compared at the present with the picture then - its coverage handed over. 4: a copy of a
+    // back buffer before the HUD - handed over at the present as the frame's HUD-less picture, see d3d11_cover)
     if (!picture) return;
     ComPtr<ID3D11Texture2D> texture;
     D3D11_TEXTURE2D_DESC pd{};
@@ -1219,7 +1225,12 @@ void Producer::on_hud_before_d3d11(ID3D11Resource* picture, std::uint32_t kind, 
     else context->CopySubresourceRegion(d11_before_.Get(), 0, 0, 0, 0, picture, 0, nullptr);
     d11_picture_ = picture;
     d11_before_taken_ = true;
-    d11_none_ = d11_confirmed_ = false;
+    d11_none_ = d11_none_bb_ = false;
+    d11_bb_ = d11_confirmed_ = kind == 4;
+    if (kind == 4) {
+        ++shared_->hooks.hudless_copies;
+        return;
+    }
     shared_->hooks.ui_layer_w = pd.Width; shared_->hooks.ui_layer_h = pd.Height; shared_->hooks.ui_layer_format = pd.Format;
     ++shared_->hooks.ui_layer_taken;
 }
@@ -1417,11 +1428,31 @@ void Producer::d3d11_learned(ID3D11DeviceContext* context, int slot) {
     ++shared_->hooks.learn_used;
 }
 
-void Producer::d3d11_cover(ID3D11DeviceContext* context, int slot) {
+void Producer::d3d11_cover(ID3D11DeviceContext* context, int slot, ID3D11Resource* backbuffer) {
     // (under the lock; the game's compute stage is restored after)
     const bool none = d11_none_ && !d11_before_taken_;
     const bool confirmed = d11_confirmed_;
-    d11_none_ = d11_confirmed_ = false;
+    const bool none_bb = none && d11_none_bb_, of_bb = d11_bb_;
+    d11_none_ = d11_confirmed_ = d11_none_bb_ = d11_bb_ = false;
+    // A back buffer (a game adapter's kinds 4/5): the copy before the HUD - or the back buffer itself, no HUD this frame - is
+    // the frame's HUD-less picture, at the back buffer's size and format (see adapters/xray.cpp).
+    if (none_bb || (of_bb && d11_before_taken_ && confirmed && d11_picture_ && d11_before_)) {
+        ID3D11Resource* hudless = none_bb ? backbuffer : d11_before_.Get();
+        d11_before_taken_ = false;
+        d11_picture_.Reset();
+        auto& m = shared_->slots[slot];
+        if (!hudless || m.tex[kUi].valid || m.tex[kHudless].valid || !m.tex[kBackbuffer].valid) return;  // (the game's own first)
+        if (!ensure_texture(slot, kHudless, textures_[slot][kBackbuffer].desc)) return;
+        auto& t = textures_[slot][kHudless];
+        copy_d3d11(context, hudless, t.d11.Get());
+        const auto& b = m.tex[kBackbuffer];
+        auto& info = m.tex[kHudless];
+        info.width = b.width; info.height = b.height; info.format = t.desc.Format;
+        info.generation = t.generation; info.ext_x = info.ext_y = 0; info.ext_w = b.width; info.ext_h = b.height;
+        info.valid = 1;
+        ++shared_->hooks.hudless_handed;
+        return;
+    }
     if (!none && (!d11_before_taken_ || !confirmed || !d11_picture_ || !d11_before_)) {  // (unconfirmed: not handed over)
         d11_before_taken_ = false;
         d11_picture_.Reset();
@@ -2454,7 +2485,7 @@ std::uint64_t Producer::begin_present_d3d11(ID3D11Resource* backbuffer, ID3D11De
         info.generation = t.generation; info.ext_x = info.ext_y = 0; info.ext_w = sd.Width; info.ext_h = sd.Height;
         info.valid = 1;
     }
-    d3d11_cover(context, slot);  // (third pattern: the HUD, if a copy before it was taken this frame)
+    d3d11_cover(context, slot, backbuffer);  // (third pattern, or a game adapter's back-buffer copy: the HUD, if a copy before it was taken this frame)
     d3d11_probe(context, slot);  // (HUD learning: the copy at this frame's candidate point)
     d3d11_learned(context, slot);  // (...the learned point, where nothing else gave the HUD)
     m.qpc_present = qpc_now();

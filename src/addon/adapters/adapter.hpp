@@ -34,6 +34,14 @@ struct GameInfo {
 struct TargetInfo {
     std::uint64_t resource = 0;
     std::uint32_t width = 0, height = 0, format = 0, samples = 0;
+    bool back_buffer = false;  // one of the swap chain's back buffers
+};
+
+// How the blend state bound for a draw treats render target 0.
+enum class Blend : std::uint8_t {
+    kNone,   // no blending: the draw overwrites
+    kAlpha,  // ordinary alpha blending (source alpha or premultiplied, over one minus source alpha)
+    kOther,  // any other blending (additive, ...)
 };
 
 enum class EventKind : std::uint8_t {
@@ -47,12 +55,16 @@ enum class EventKind : std::uint8_t {
 struct AdapterEvent {
     EventKind kind = EventKind::kDraw;
     std::uint64_t context = 0;  // the command list / device context (native handle)
-    bool deferred = false;      // Direct3D 11: a deferred context (the host passes none on for now)
+    bool deferred = false;      // Direct3D 11: recorded on a deferred context (reaches the GPU when the immediate one executes it)
     std::uint32_t target_count = 0;
     TargetInfo targets[8];
     TargetInfo depth;
     float min_depth = 0, max_depth = 1;
+    // kDraw: the vertex (or index) count, and the state bound on its context for it.
     std::uint32_t vertices = 0;
+    Blend blend = Blend::kNone;
+    bool writes_colour = true;       // render target 0's write mask not empty (occlusion queries draw with it empty)
+    std::uint64_t pixel_shader = 0;  // the pixel shader bound (its native handle: which one, not what it does)
     std::uint64_t resource = 0;
     std::uint64_t streamline_frame = 0;  // the Streamline frame token at the event (0: none)
 };
@@ -62,11 +74,25 @@ struct AdapterEvent {
 // a loading screen or a holstered weapon is not a failure.
 enum class Verdict : std::uint8_t { kNotSeen, kConfirmed, kContradicted };
 
+// What an adapter hands on (to the producer's existing entry points, through the host: only while the adapter is trusted
+// and the capability switched on - host_logic.hpp).
+// kCapHud, Direct3D 11: the game's picture on a back buffer before its HUD (Producer::on_hud_before_d3d11's kinds).
+enum class HudBefore : std::uint32_t {
+    kGivenUp = 3,        // the copy taken this frame is not HUD-less after all (the picture drawn again after it): drop it
+    kCopyNow = 4,        // copy `picture` (a back buffer) now, before the draw about to happen: the frame's HUD-less picture
+    kNoHudThisFrame = 5, // no HUD this frame: the back buffer itself, at the present, is the HUD-less picture
+};
+class Output {
+public:
+    virtual ~Output() = default;
+    virtual void hud_before_d3d11(std::uint64_t context, std::uint64_t picture, HudBefore kind) = 0;
+};
+
 class GameAdapter {
 public:
     virtual ~GameAdapter() = default;
     virtual std::uint32_t capabilities() const = 0;
-    virtual void on_event(const AdapterEvent& event) = 0;
+    virtual void on_event(const AdapterEvent& event, Output& out) = 0;
     // At the game's present (after its kPresent event): this frame's verdict.
     virtual Verdict end_frame() = 0;
     // The device, its swap chain or the game's resolution changed: forget what was learned about the frame's layout.

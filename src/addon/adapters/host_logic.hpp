@@ -93,6 +93,9 @@ public:
 
 class HostCore {
 public:
+    HostCore() = default;
+    HostCore(const HostCore&) = delete;  // (its output gate points back at it)
+    HostCore& operator=(const HostCore&) = delete;
     // Picks the game's adapter and, when there is one, registers the events. read: [FrameWarp] values by key (the
     // whole string; empty when not set).
     void init(const std::vector<AdapterDescriptor>& table, const GameInfo& game, const std::function<std::string(const std::string&)>& read,
@@ -117,12 +120,24 @@ public:
         adapter_.reset();
         descriptor_ = nullptr;
         enabled_ = 0;
+        gate_.hud.clear();
     }
 
     void on_event(const AdapterEvent& event) {
         if (!adapter_ || health_.state() == Health::kDetached) return;
-        adapter_->on_event(event);
+        adapter_->on_event(event, gate_);
         if (event.kind == EventKind::kPresent) health_.add(adapter_->end_frame());
+    }
+    // What the adapter handed on since the last call, kept only where gives() allowed it (host.cpp passes it on to the
+    // producer outside its lock).
+    struct HudOut {
+        std::uint64_t context, picture;
+        HudBefore kind;
+    };
+    std::vector<HudOut> take_outputs() {
+        std::vector<HudOut> out;
+        out.swap(gate_.hud);
+        return out;
     }
     void reset() {
         if (adapter_) adapter_->reset();
@@ -141,11 +156,21 @@ public:
     Health::State health() const { return health_.state(); }
 
 private:
+    // The adapter's outputs, dropped unless their capability is given now (on probation, let go or switched off: nothing).
+    struct Gate final : Output {
+        explicit Gate(const HostCore* h) : host(h) {}
+        const HostCore* host;
+        std::vector<HudOut> hud;
+        void hud_before_d3d11(std::uint64_t context, std::uint64_t picture, HudBefore kind) override {
+            if (host && host->gives(kCapHud)) hud.push_back({context, picture, kind});
+        }
+    };
     std::unique_ptr<GameAdapter> adapter_;
     const AdapterDescriptor* descriptor_ = nullptr;
     std::uint32_t enabled_ = 0;
     Health health_;
     Registrar* registrar_ = nullptr;
+    Gate gate_{this};
 };
 
 }  // namespace fw::adapters

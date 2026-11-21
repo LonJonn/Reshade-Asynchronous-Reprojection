@@ -30,7 +30,7 @@ target_include_directories(fw_options INTERFACE src)
 
 # In-game ReShade add-on (static CRT so it has no runtime dependency inside the game).
 add_library(FrameWarpAddon SHARED src/addon/addon.cpp src/addon/producer.cpp src/addon/vk_transport.cpp src/addon/streamline_hooks.cpp
-            src/addon/ngx_hooks.cpp src/addon/ffx_hooks.cpp src/addon/reshade_feed.cpp src/addon/output_effects.cpp src/addon/depth_choice.cpp src/addon/ui_probe.cpp src/addon/mv_probe.cpp src/addon/camera_search.cpp src/addon/ui_layer.cpp src/addon/shader_scan.cpp src/addon/hud_learn.cpp src/addon/game_probe.cpp src/addon/frame_cap.cpp src/addon/fault_log.cpp src/addon/adapters/host.cpp src/common/inline_hook.cpp)
+            src/addon/ngx_hooks.cpp src/addon/ffx_hooks.cpp src/addon/reshade_feed.cpp src/addon/output_effects.cpp src/addon/depth_choice.cpp src/addon/ui_probe.cpp src/addon/mv_probe.cpp src/addon/camera_search.cpp src/addon/ui_layer.cpp src/addon/shader_scan.cpp src/addon/hud_learn.cpp src/addon/game_probe.cpp src/addon/frame_cap.cpp src/addon/fault_log.cpp src/addon/adapters/host.cpp src/addon/adapters/xray.cpp src/common/inline_hook.cpp)
 target_link_libraries(FrameWarpAddon PRIVATE fw_options d3d12 dxgi d3dcompiler ole32 oleaut32 advapi32)
 # Symbols (FrameWarp.pdb, kept in the build folder): the fault log's offsets resolve to functions and lines (fault_log.cpp)
 target_compile_options(FrameWarpAddon PRIVATE /Zi)
@@ -116,7 +116,7 @@ if(BUILD_TESTING)
   add_executable(streamline_tests tests/streamline_tests.cpp)
   target_link_libraries(streamline_tests PRIVATE fw_options)
   add_test(NAME streamline_layout COMMAND streamline_tests)
-  add_executable(adapter_tests tests/adapter_tests.cpp)
+  add_executable(adapter_tests tests/adapter_tests.cpp src/addon/adapters/xray.cpp)
   target_link_libraries(adapter_tests PRIVATE fw_options)
   add_test(NAME adapter_host COMMAND adapter_tests)
 

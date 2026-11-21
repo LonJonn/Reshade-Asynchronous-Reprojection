@@ -1767,7 +1767,12 @@ void register_callbacks() {
     reshade::register_event<reshade::addon_event::create_swapchain>(on_create_swapchain);
     reshade::register_event<reshade::addon_event::set_fullscreen_state>(on_set_fullscreen_state);
     reshade::register_overlay("XPAR", draw_overlay);
-    fw::adapters::host::init();  // (registers nothing unless the game has an adapter - adapters/host.cpp)
+    // (registers nothing unless the game has an adapter - adapters/host.cpp; what it says about the HUD goes where
+    // ui_layer's Direct3D 11 copies go, under the same setting)
+    fw::adapters::host::init([](std::uint64_t picture, std::uint32_t kind, std::uint64_t context) {
+        if (g_producer && g_producer->shared() && g_producer->shared()->settings.game_hud_layers)
+            g_producer->on_hud_before_d3d11(reinterpret_cast<ID3D11Resource*>(picture), kind, reinterpret_cast<ID3D11DeviceContext*>(context));
+    });
 }
 void unregister_callbacks() {
     fw::adapters::host::shutdown();

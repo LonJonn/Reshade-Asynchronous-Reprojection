@@ -334,7 +334,8 @@ private:
     bool d11_motion_held_logged_ = false;
     bool d11_shrink_motion(ID3D11DeviceContext* context, ID3D11Resource* source, std::uint32_t width, std::uint32_t height);
     bool d11_before_taken_ = false, d11_cs_failed_ = false, d11_none_ = false, d11_confirmed_ = false;
-    void d3d11_cover(ID3D11DeviceContext* context, int slot);
+    bool d11_bb_ = false, d11_none_bb_ = false;  // (a game adapter's: the copy is of a back buffer; no HUD on one this frame)
+    void d3d11_cover(ID3D11DeviceContext* context, int slot, ID3D11Resource* backbuffer);
     bool ensure_d11_cover_cs(ID3D11Device* device);
     // HUD learning: the copy at the candidate point (Direct3D 12 / 11), its candidate, presents since; the comparison.
     Microsoft::WRL::ComPtr<ID3D12Resource> probe_pending_, probe_cov_, probe_end_;
