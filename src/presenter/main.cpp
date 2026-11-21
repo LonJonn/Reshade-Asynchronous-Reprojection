@@ -2262,6 +2262,36 @@ void render_thread() {
         Prediction applied{};
         // FrameWarp's own warp engine when chosen, or when Latewarp is not available.
         const bool own_engine = settings.warp_engine == 1 || !latewarp.ready();
+        // Overscan (Settings::overscan_pct): the game renders a wider view than is shown - m% of the shown width more on
+        // each side, set by the player through the game's FOV - and the warp shows its centre, scaled up to the screen, and
+        // draws turns from the margin around it. The HUD stays where the game drew it (Renderer::set_overscan). Only the
+        // own engine's continuous warp ("nothing held but the HUD") can; anything else shows the whole frame as before.
+        const double overscan_pct = std::clamp(double(settings.overscan_pct), 0.0, 25.0);
+        const double overscan_shown = 1.0 / (1.0 + 2.0 * overscan_pct / 100.0);  // shown fraction of the frame, both axes
+        renderer.set_overscan(float(overscan_shown), float(overscan_shown));
+        renderer.set_warp_splat(settings.warp_splat != 0);  // (before overscan_usable, which depends on it)
+        const bool overscan_on = own_engine && renderer.overscan_usable();
+        {
+            constexpr double kDeg = 180.0 / 3.14159265358979;
+            const std::uint32_t state = !renderer.overscan_wanted() ? 0u : overscan_on ? 1u : 2u;
+            const double p11 = std::fabs(double(source_camera.view_to_clip[5]));
+            const double game_vfov = p11 > 1e-6 ? 2.0 * std::atan(1.0 / p11) * kDeg : 0.0;
+            const double shown_vfov = p11 > 1e-6 ? 2.0 * std::atan(overscan_shown / p11) * kDeg : 0.0;
+            sh.presenter.overscan_game_vfov_deg = float(game_vfov);
+            sh.presenter.overscan_shown_vfov_deg = float(state == 1 ? shown_vfov : game_vfov);
+            const char* note = state != 2 ? ""
+                : !own_engine ? "needs XPAR's own warp engine"
+                : !renderer.tether() ? "needs the continuous warp"
+                : "not with the forward splat or the low-resolution path";
+            std::snprintf(sh.presenter.overscan_note, sizeof(sh.presenter.overscan_note), "%s", note);
+            if (state != sh.presenter.overscan_state) {
+                if (state == 1) logf("overscan: %.1f%% of the shown width per side - %.1f%% of the frame shown (game vfov %.2f, shown %.2f)",
+                                     overscan_pct, overscan_shown * 100.0, game_vfov, shown_vfov);
+                else if (state == 2) logf("overscan: asked for (%.1f%%) but not in use: %s", overscan_pct, note);
+                else logf("overscan: off");
+            }
+            sh.presenter.overscan_state = state;
+        }
         if (source.valid && settings.enabled && !settings.show_original && (!sh.overlay_open || g_always_warp) && source.has_depth) {
             // (paced: the camera as of the planned wake-up, a fixed time before the refresh it is meant for - not
             // the moment the loop got there, which varies by a fraction of a millisecond and would jitter the motion)
@@ -2280,12 +2310,31 @@ void render_thread() {
             // jumping to it every refresh made the camera tremble.
             if (settings.auto_prediction == 5) {
                 const double ahead = std::max(0.0, g_app.model.latency() - g_app.model.effective_prediction());
+                // How far a camera's view reaches, per axis (left/right, up/down). Without overscan: the screen's centre shifted by its
+                // turn, as a share of the width. With it: the shown crop's corners turned with it, in the frame's clip space (1: its
+                // edge - see crop_reach).
+                Mat4 proj{};
+                std::memcpy(proj.data(), source_camera.view_to_clip, sizeof(proj));
+                const double z_sign = view_z_sign(source_camera.view_to_clip);
+                const Mat4 view_source = view_matrix(source_basis, source_basis.pos, z_sign);
                 const double sx = std::fabs(source_camera.view_to_clip[0]), sy = std::fabs(source_camera.view_to_clip[5]);
-                auto edge_x = [&](const Prediction& q) { return 0.5 * std::tan(std::min(std::fabs(q.yaw), 1.4)) * sx; };
-                auto edge_y = [&](const Prediction& q) { return 0.5 * std::tan(std::min(std::fabs(q.pitch), 1.4)) * sy; };
+                auto reach = [&](const Prediction& q, double r[2]) {
+                    if (!overscan_on) {
+                        r[0] = 0.5 * std::tan(std::min(std::fabs(q.yaw), 1.4)) * sx;
+                        r[1] = 0.5 * std::tan(std::min(std::fabs(q.pitch), 1.4)) * sy;
+                    } else if (!crop_reach(clip_to_source_rotation(proj, view_matrix(q.camera, source_basis.pos, z_sign), view_source),
+                                           overscan_shown, r)) {
+                        r[0] = r[1] = 1e9;  // (turned away: never within)
+                    }
+                };
+                // The limit: Auto's own reach plus the extra allowed. With overscan, at least the frame's edge less a guard band for
+                // the warp's search; the extra, a share of the shown width, is 2 * shown * extra in the frame's clip space.
+                constexpr double kGuard = 0.01;  // (clip units: half a percent of the frame's width or height at each edge)
                 const double extra = std::max(0.0f, settings.edge_limit_pct) / 100.0;
-                const double limit_x = edge_x(p) + extra, limit_y = edge_y(p) + extra;
-                auto within = [&](const Prediction& q) { return edge_x(q) <= limit_x && edge_y(q) <= limit_y; };
+                double limit[2];
+                reach(p, limit);
+                for (double& l : limit) l = overscan_on ? std::max(1.0 - kGuard, l) + 2.0 * overscan_shown * extra : l + extra;
+                auto within = [&](const Prediction& q) { double r[2]; reach(q, r); return r[0] <= limit[0] && r[1] <= limit[1]; };
                 double allowed = ahead;
                 if (!settings.edge_unlimited && !within(g_app.model.predict(t_camera + ahead))) {
                     double lo = 0, hi = ahead;
@@ -2295,7 +2344,9 @@ void render_thread() {
                     }
                     allowed = lo;
                 }
-                now_ahead = std::clamp(now_ahead + std::clamp(allowed - now_ahead, -0.6e-3, 0.25e-3), 0.0, ahead);
+                // (overscan: back faster, 1.5 ms a refresh - the allowed time drops only once the margin is used up, and following it
+                // slowly then would show the edge)
+                now_ahead = std::clamp(now_ahead + std::clamp(allowed - now_ahead, overscan_on ? -1.5e-3 : -0.6e-3, 0.25e-3), 0.0, ahead);
                 if (now_ahead > 0) p = g_app.model.predict(t_camera + now_ahead);
             } else if (settings.auto_prediction == 6) {
                 // Lowest latency without edge fill: the latest camera time whose view stays between the game's last two
@@ -2386,7 +2437,6 @@ void render_thread() {
                 unmoved = !settings.show_mask && generated < 0;
                 for (int i = 0; i < 16 && unmoved; ++i) unmoved = std::fabs(m.data()[i] - (i % 5 == 0 ? 1.0f : 0.0f)) < 2e-6f;
                 if (g_always_warp) unmoved = false;  // (development, AlwaysWarp: warped even so - a misfiring "nothing moved" would show)
-                renderer.set_warp_splat(settings.warp_splat != 0);
                 // (two shares, Settings::share_from_input: the input's part of the predicted turn on its own - the frame's
                 // camera turned by it - for the warp to move each spot by its share of each part; not around an orbit)
                 Mat4 m_input{};
@@ -2446,6 +2496,8 @@ void render_thread() {
                 // (...only where there is anything to draw them from - the game's motion vectors this frame, Renderer::objects_ready: on
                 // by default, a game without them drew every refresh of a still camera for nothing)
                 if (objects_between && generated < 0 && held_back > 0 && renderer.objects_ready()) unmoved = false;
+                // (overscan: the frame as it is is not the picture - only the warp crops it - so a still camera is warped too)
+                if (overscan_on) unmoved = false;
                 renderer.set_edge_dither(settings.edge_fill == 2);
                 renderer.set_whole_pixels(settings.whole_pixels != 0);
                 warped = unmoved || renderer.own_warp(source, settings.use_ui_tags != 0, inputs.no_warp_mask != nullptr, m.data(), inputs.depth_inverted,

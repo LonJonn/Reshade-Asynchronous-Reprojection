@@ -100,6 +100,23 @@ inline Mat4 clip_to_source_rotation(const Mat4& projection, const Mat4& view_tar
     return mat_mul(mat_mul(inv_p, rot), projection);
 }
 
+// Overscan: how far the corners of the shown crop - `shown` of the frame's width and height, centred - reach into the rendered
+// frame once the camera has turned (target_to_source: clip_to_source_rotation). Per axis, in the frame's clip space (1: its
+// edge). Any depth in front will do: a pure turn moves every depth alike. false: a corner lies behind the frame's camera.
+inline bool crop_reach(const Mat4& target_to_source, double shown, double out[2]) {
+    const Mat4& m = target_to_source;
+    out[0] = out[1] = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        const double x = (k & 1) ? shown : -shown, y = (k & 2) ? shown : -shown;
+        double o[4];
+        for (int j = 0; j < 4; ++j) o[j] = x * m[j] + y * m[4 + j] + 0.5 * m[8 + j] + m[12 + j];
+        if (o[3] <= 1e-6) return false;
+        out[0] = std::max(out[0], std::fabs(o[0] / o[3]));
+        out[1] = std::max(out[1], std::fabs(o[1] / o[3]));
+    }
+    return true;
+}
+
 // Rendered frame clip space (with depth) -> displayed camera clip space, rotation and movement:
 // clip_s * P^-1 * V_s^-1 * V_t * P.
 inline Mat4 clip_source_to_target(const Mat4& projection, const Mat4& view_source, const Mat4& view_target) {

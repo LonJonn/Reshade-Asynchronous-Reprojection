@@ -3477,6 +3477,27 @@ bool ow_held(int3 p) {
     if (uint(threshold + 0.5) & 65536u) return ow_mask_t.Load(p).x > 0.97;
     return ow_mask_t.Load(p).x > 0.885;
 }
+// Overscan (Renderer::set_overscan - mv_scale: the share of the frame's width and height shown, centred; 0: off). The game
+// renders a wider view than the screen shows; the output is the frame's centre, scaled up. Everything of the world - the warp's
+// search, the frame's own pixel where the warp shows it as it is, a sight's layer - is looked up where the output pixel lies in
+// the frame's own, uncropped picture (ow_out_uv, ow_world_px); the HUD - the UI layer, what is held as HUD - stays
+// at the output pixel, where the game laid it out for the screen. Only with the continuous warp and the search (nothing held but
+// the HUD; no claims, no low-resolution refreshes - own_warp sets it only then).
+bool ow_overscan() { return mv_scale.x > 0; }
+// The frame's uv the world at output pixel p is seen at - the warp's starting point (overscan: through the crop).
+float2 ow_out_uv(uint2 p) {
+    const float2 uv = (float2(p) + 0.5) / float2(out_size);
+    return ow_overscan() ? (uv - 0.5) * mv_scale + 0.5 : uv;
+}
+// ...and the frame's own pixel there: what the warp shows where it shows the frame as it is.
+int2 ow_world_px(uint2 p) {
+    if (!ow_overscan()) return int2(p);
+    return clamp(int2(floor(ow_out_uv(p) * float2(out_size))), int2(0, 0), int2(out_size) - 1);
+}
+// Held at output pixel p - with overscan and a UI layer laid over (flag 1, not the scenery taken out of the frame - flag
+// 1073741824 - whose held pixels are the frame itself, HUD and all): nothing; the HUD is the layer alone there, laid over the
+// warped world, so nothing of the uncropped frame shows under it
+bool ow_out_held(int3 p) { return (flags & 2) && !(ow_overscan() && (flags & 1) && !(flags & 1073741824)) && ow_held(p); }
 // The share of the warp's motion applied at this spot (the stretch).
 float ow_follow(float2 uv) { return saturate(1.0 - ow_mask_at(uv).x / 0.9); }
 float ow_depth(float2 uv) {
@@ -4755,21 +4776,22 @@ bool ow_dither_warped(uint2 id, float2 uv, float2 src) {
 }
 float4 ow_scene_from(uint2 id, float2 uv, float2 src, bool valid) {
     if (valid && ow_hidden) return ow_hidden_c;  // (uncovered, the memory has what is behind)
+    const int3 frame_px = int3(ow_world_px(id), 0);  // (the frame as it is here - overscan: through the crop)
     // (ow_dev 8192 - set_dither_holes, development, the user's test of 2026-10-30: what no frame has - uncovered, the memory has nothing,
     // the ring's stretch - every other pixel of a Bayer pattern the frame as it is at that pixel, as the screen's edges; not
     // where that is something held: a copy of it)
     if ((ow_dev() & 8192u) && valid && (ow_path == 3 || ow_path == 7 || ow_path == 8 || ow_path == 9) &&
-        kOwBayer[(id.y & 3) * 4 + (id.x & 3)] < 8.0 && !((flags & 2) && ow_held(int3(id.xy, 0)))) return ow_color_t.Load(int3(id.xy, 0));
+        kOwBayer[(id.y & 3) * 4 + (id.x & 3)] < 8.0 && !ow_out_held(int3(id.xy, 0))) return ow_color_t.Load(frame_px);
     float4 c;
     if (!valid) {
-        c = ow_color_t.Load(int3(id.xy, 0));  // nothing sensible to show (e.g. more than 90 degrees away)
+        c = ow_color_t.Load(frame_px);  // nothing sensible to show (e.g. more than 90 degrees away)
     } else {
         const float2 half_px = 0.5 / float2(out_size);
         const float2 inside = clamp(src, half_px, 1.0 - half_px);
         if (all(inside == src)) {
             c = ow_pick(src);
             c = ow_two_frames(c, uv, src);
-            if ((flags & 16777216) && !ow_dither_warped(id, uv, src)) return ow_color_t.Load(int3(id.xy, 0));
+            if ((flags & 16777216) && !ow_dither_warped(id, uv, src)) return ow_color_t.Load(frame_px);
             // Held (masked) pixels are no scene: a warped pixel landing on them would copy the HUD or the
             // weapon to a second, moving place. Step past them along the warp to the nearest scene pixel.
             if (flags & 2) {
@@ -4813,7 +4835,7 @@ float4 ow_scene_from(uint2 id, float2 uv, float2 src, bool valid) {
             // direction, so the band reads as a soft continuation rather than streaks - or dithered: the frame as it is
             // here (flag 16777216, see ow_dither_warped).
             if (flags & 16777216) {
-                c = ow_color_t.Load(int3(id.xy, 0));
+                c = ow_color_t.Load(frame_px);
             } else if (flags & 1024) {
                 c = ow_soft_edge(src, inside);
             } else {
@@ -4885,8 +4907,9 @@ void ow_store(uint2 p, float3 c) {
 // sight-reticle layer, the UI layer.
 void ow_finish(uint2 pid, float2 uv, float2 src, bool valid) {
     const uint3 id = uint3(pid, 0);
+    const int3 frame_px = int3(ow_world_px(pid), 0);  // (the frame as it is here - overscan: through the crop)
     float4 c = ow_scene_from(id.xy, uv, src, valid);
-    bool held_here = (flags & 2) && ow_held(int3(id.xy, 0));
+    bool held_here = ow_out_held(int3(id.xy, 0));
     // (the weapon between game frames: here the frame's weapon pixel it came from, or - where it has moved off - the scenery)
     const bool hud_here = held_here && ow_mask_t.Load(int3(id.xy, 0)).x > 0.97;
     bool gun_moved = false;
@@ -4900,7 +4923,7 @@ void ow_finish(uint2 pid, float2 uv, float2 src, bool valid) {
         c = ow_held_colour(int3(id.xy, 0));
     }
     else if ((flags & 2048) && valid) {
-        const float4 here = ow_layer_t.Load(int3(id.xy, 0)), there = ow_layer_t.SampleLevel(ow_linear, src, 0);
+        const float4 here = ow_layer_t.Load(frame_px), there = ow_layer_t.SampleLevel(ow_linear, src, 0);
         float3 scene = c.rgb - there.rgb;
         const float under = ow_cover(there);
         if (under > 0) {
@@ -4922,18 +4945,18 @@ void ow_finish(uint2 pid, float2 uv, float2 src, bool valid) {
                 }
             scene = lerp(scene, past, under);
         }
-        c.rgb = lerp(scene + here.rgb, ow_color_t.Load(int3(id.xy, 0)).rgb, ow_cover(here));
+        c.rgb = lerp(scene + here.rgb, ow_color_t.Load(frame_px).rgb, ow_cover(here));
     }
     if ((flags & 1) && !ow_low() && !((flags & 1073741824) && held_here)) c.rgb = ow_over(c.rgb, ow_ui_at(int3(id.xy, 0)));
-    if ((flags & 8388608) && valid && !((flags & 2) && ow_held(int3(id.xy, 0)))) c.rgb = ow_faint(c.rgb, int2(id.xy), src);
+    if ((flags & 8388608) && valid && !ow_out_held(int3(id.xy, 0))) c.rgb = ow_faint(c.rgb, int2(id.xy), src);
     // (the path / 16: the presenter's output is 8 or 10 bits per channel - whole numbers clamped to 1 there)
-    if (flags & 32768) c = float4(float((flags & 2) && ow_held(int3(id.xy, 0)) ? 14 : ow_path) / 16.0, float(ow_why) / 16.0, 0, 1);
+    if (flags & 32768) c = float4(float(ow_out_held(int3(id.xy, 0)) ? 14 : ow_path) / 16.0, float(ow_why) / 16.0, 0, 1);
     ow_store(id.xy, c.rgb);
 }
 // One thread per output pixel (search warp, a pure turn).
 [numthreads(8, 8, 1)] void cs_own_warp(uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= out_size)) return;
-    const float2 uv = (float2(id.xy) + 0.5) / float2(out_size);
+    const float2 uv = ow_out_uv(id.xy);
     float2 src;
     ow_hidden = false;
     ow_path = 0;
@@ -4976,7 +4999,7 @@ bool ow_lean(uint2 p) {
     // not looked for. ow_finish still looks - there whether it moved decides more)
     bool gun_moved = false;
     const int3 gun_from = ow_tether() ? pi : ow_gun_from(p, gun_moved);
-    bool held_here = (flags & 2) && ow_held(pi);
+    bool held_here = ow_out_held(pi);
     bool gun_here = false;
     if (gun_moved && !(held_here && ow_mask_t.Load(pi).x > 0.97)) {
         gun_here = ow_weapon_held(gun_from);
@@ -4988,7 +5011,7 @@ bool ow_lean(uint2 p) {
     } else if (held_here) {
         c = ow_held_colour(pi);
     } else {
-        const float2 uv = (float2(p) + 0.5) / float2(out_size);
+        const float2 uv = ow_out_uv(p);
         float2 src;
         if (!ow_lean_claim(uv, src)) return false;
         const float2 half_px = 0.5 / float2(out_size);
@@ -4998,9 +5021,10 @@ bool ow_lean(uint2 p) {
         c = ow_pick(src);
         c = ow_two_frames(c, uv, src);
         if (flags & 2048) {
-            const float4 here = ow_layer_t.Load(pi), there = ow_layer_t.SampleLevel(ow_linear, src, 0);
+            const int3 wpi = int3(ow_world_px(p), 0);
+            const float4 here = ow_layer_t.Load(wpi), there = ow_layer_t.SampleLevel(ow_linear, src, 0);
             if (ow_cover(there) > 0) return false;
-            c.rgb = lerp(c.rgb - there.rgb + here.rgb, ow_color_t.Load(pi).rgb, ow_cover(here));
+            c.rgb = lerp(c.rgb - there.rgb + here.rgb, ow_color_t.Load(wpi).rgb, ow_cover(here));
         }
         if (flags & 8388608) c.rgb = ow_faint(c.rgb, pi.xy, src);
     }
@@ -5051,11 +5075,11 @@ bool ow_seek(uint2 p) {
     const int3 pi = int3(p, 0);
     float4 c;
     float2 src = 0;
-    const bool held_here = (flags & 2) && ow_held(pi);
+    const bool held_here = ow_out_held(pi);
     if (held_here) {
         c = ow_held_colour(pi);
     } else {
-        const float2 uv = (float2(p) + 0.5) / float2(out_size);
+        const float2 uv = ow_out_uv(p);
         if (!ow_seek_search(uv, src)) return false;
         if (!(all(src >= 0) && all(src <= 1))) return false;  // (ow_find's test: outside, the memory's way)
         const float2 half_px = 0.5 / float2(out_size);
@@ -5063,7 +5087,7 @@ bool ow_seek(uint2 p) {
         if ((flags & 2) && ow_held(int3(clamp(int2(src * float2(out_size)), int2(0, 0), int2(out_size) - 1), 0))) return false;
         c = ow_pick(src);
         c = ow_two_frames(c, uv, src);
-        if ((flags & 16777216) && !ow_dither_warped(p, uv, src)) c = ow_color_t.Load(pi);  // (dithered edges: see ow_scene_from)
+        if ((flags & 16777216) && !ow_dither_warped(p, uv, src)) c = ow_color_t.Load(int3(ow_world_px(p), 0));  // (dithered edges: see ow_scene_from)
     }
     if ((flags & 1) && !ow_low() && !((flags & 1073741824) && held_here)) c.rgb = ow_over(c.rgb, ow_ui_at(pi));
     if ((flags & 8388608) && !held_here) c.rgb = ow_faint(c.rgb, pi.xy, src);
@@ -5098,7 +5122,7 @@ groupshared uint os_rest[8 * 8];
     const uint e = ow_list_u.Load(16 + 4 * (t / per)), k = t % per;
     if (!((e >> (24 + k)) & 1u)) return;
     const uint2 p = uint2(e & 4095u, (e >> 12) & 4095u) * 2 + uint2(k & 1, k >> 1);
-    const float2 uv = (float2(p) + 0.5) / float2(out_size);
+    const float2 uv = ow_out_uv(p);
     float2 src;
     ow_hidden = false;
     const bool valid = ow_find(uv, src);
@@ -8778,6 +8802,9 @@ bool Renderer::own_warp(const IngestedSource& src, bool use_ui_tags, bool use_ma
     XConstants c{};
     std::memcpy(c.clip_to_prev, source_to_target, sizeof(c.clip_to_prev));
     c.out_size[0] = ow; c.out_size[1] = oh;
+    // (overscan - set_overscan: the share of the frame shown, centred, in mv_scale - the warp's passes have no use for the motion
+    // vectors' scale; 0: off. See ow_out_uv)
+    if (overscan_usable()) { c.mv_scale[0] = overscan_[0]; c.mv_scale[1] = overscan_[1]; }
     const UINT dw = shown(kPDepth).width, dh = shown(kPDepth).height;
     const Rect2 r = src.depth_rect.w ? src.depth_rect : Rect2{0, 0, dw, dh};
     c.rect[0] = r.x; c.rect[1] = r.y; c.rect[2] = std::min(r.w, dw - r.x); c.rect[3] = std::min(r.h, dh - r.y);

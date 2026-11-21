@@ -10,7 +10,7 @@ namespace fw {
 inline std::int64_t qpc_now() { LARGE_INTEGER v; QueryPerformanceCounter(&v); return v.QuadPart; }
 
 constexpr std::uint32_t kMagic = 0x46574152;  // 'FWAR'
-constexpr std::uint32_t kVersion = 93;  // (93: Settings::whole_pixels; 92: Settings::even_pacing; 90: a test build installed 2026-11-12, never committed)
+constexpr std::uint32_t kVersion = 94;  // (94: Settings::overscan_pct, PresenterStatus::overscan_*; 93: Settings::whole_pixels; 92: Settings::even_pacing; 90: a test build installed 2026-11-12, never committed)
 // (four: the presenter taking one in, one ready, and the add-on writing two - a game that starts its next frame before
 // the last one is presented (its tags and constants come first: Cyberpunk, Enshrouded) has two being written. Three
 // slots, 2026-10-28, dropped 43-55% of their frames before the presenter saw them - the reprojection fed at half the
@@ -166,6 +166,11 @@ struct Settings {
     std::uint32_t whole_pixels;        // default on: the warp's picture from the nearest of the game's pixels, never a blend of neighbours -
                                        // a blend softened fine detail by how far between pixels the warp landed, a turn going sharp and soft
                                        // with its speed (Renderer::set_whole_pixels; saved per game)
+    float overscan_pct;                // default 0 (off): the game renders a wider view than is shown - its field of view raised by the
+                                       // user so that this much of the shown width lies beyond each side (percent; the same share of the
+                                       // height). The presenter shows the centre, scaled up to the screen, and the warp turns into the
+                                       // margin instead of past the frame's edge; the HUD stays as the game lays it out
+                                       // (Renderer::set_overscan; XPAR engine, continuous warp; saved per game)
 };
 
 // Presenter status, displayed by the add-on UI.
@@ -237,6 +242,11 @@ struct PresenterStatus {
     float reshade_gpu_ms;
     volatile LONG64 reshade_drawn_qpc;
     char reshade_note[160];
+    // Overscan (Settings::overscan_pct): 0 off, 1 in use, 2 asked for but not possible (overscan_note says why). The game's
+    // vertical field of view as rendered and as shown (degrees; 0 not known): shown = rendered narrowed by the crop.
+    std::uint32_t overscan_state;
+    float overscan_game_vfov_deg, overscan_shown_vfov_deg;
+    char overscan_note[96];
 };
 
 struct HookStats {

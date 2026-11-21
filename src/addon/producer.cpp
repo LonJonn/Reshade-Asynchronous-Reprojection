@@ -51,6 +51,7 @@ void default_settings(Settings& s) {
     s.follow_share = 1;  // the character/weapon by the share of the turn it follows
     s.share_from_input = 1;  // ...of the turn the input explains
     s.edge_limit_pct = 0.0f;  // camera as of now: no more of the edge uncovered than Auto's
+    s.overscan_pct = 0.0f;  // off: the game's frame shown whole
     s.edge_fill = 2;  // dithered (the frame as it is past the edge, a dithered band inside it - user, 2026-10-21); soft and extended edge pixels are the options
     s.no_warp_mask = 1;   // HUD detection in games without HUD layers
     s.keep_attached = 1;  // character / first-person weapon detection, every game

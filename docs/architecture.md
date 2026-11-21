@@ -69,6 +69,7 @@ Defaults come from `default_settings` in [producer.cpp](../src/addon/producer.cp
 | Background memory | On, at 1/4 of the picture's width and height. |
 | Uncovered screen edges | Dithered. |
 | Camera latency | Lowest latency without edge fill (`auto_prediction = 6`). |
+| Overscan | Off (`overscan_pct = 0`). When set, the search path's output pixel is mapped into the frame's centre crop (`ow_out_uv`, carried in the warp's `mv_scale`); the HUD stays at the output pixel. |
 | Present lead | Automatic; 6 ms is the manual setting's initial value. |
 | Detailed diagnostics | Off unless enabled or forced by a developer override. |
 

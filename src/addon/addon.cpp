@@ -326,6 +326,7 @@ constexpr Persisted kPersisted[] = {
     {"WholePixels", &fw::Settings::whole_pixels, nullptr},
     {"EdgeLimit", nullptr, &fw::Settings::edge_limit_pct},
     {"EdgeUnlimited", &fw::Settings::edge_unlimited, nullptr},
+    {"Overscan", nullptr, &fw::Settings::overscan_pct, true},  // (kept: it goes with the game's own field of view, set to match)
     {"WarpEngine", &fw::Settings::warp_engine, nullptr},
     {"KeepHudStill", &fw::Settings::use_ui_tags, nullptr},
     {"KeepStillHud", &fw::Settings::no_warp_mask, nullptr},
@@ -1221,6 +1222,22 @@ void draw_overlay(effect_runtime*) {
             if (unlimited) ImGui::EndDisabled();
             hint("How much more of the screen's edge a fast turn may uncover than with Auto latency. 0: no more than Auto - "
                  "the camera as of now whenever that adds no edge, held back during fast turns.");
+        }
+        {
+            ImGui::SliderFloat("Overscan (% of width per side)", &s.overscan_pct, 0.0f, 25.0f, "%.1f");
+            hint("For a game set to render a wider view than the screen shows: its field of view raised so that this much of "
+                 "the shown width lies beyond each side (the same share of the height). XPAR shows the centre, scaled up to "
+                 "the screen, and a turn uncovers the margin instead of the frame's edge - the camera as of now stays "
+                 "real pixels. The HUD stays as the game lays it out. 0: off. Needs the XPAR engine.");
+            // (the field of view to set in the game for this overscan: the one shown now, widened by the crop)
+            const double rho = 1.0 + 2.0 * std::max(0.0, double(s.overscan_pct)) / 100.0;
+            const double shown = p.overscan_state == 1 ? p.overscan_shown_vfov_deg : p.overscan_game_vfov_deg;
+            if (p.overscan_state == 2) ImGui::TextDisabled("(not in use: %s)", p.overscan_note);
+            if (shown > 1.0 && s.overscan_pct > 0.0f) {
+                const double wide = 2.0 * std::atan(std::tan(shown * 3.14159265358979 / 360.0) * rho) * 360.0 / 3.14159265358979;
+                ImGui::TextDisabled("(game renders %.1f deg vertical, shown %.1f; for %.1f%%: the game at %.1f deg)", p.overscan_game_vfov_deg,
+                                    shown, s.overscan_pct, wide);
+            }
         }
         const bool auto_latency = s.auto_prediction != 0;
         if (auto_latency && shown_in_ui(kHiddenFromUi.auto_latency)) {

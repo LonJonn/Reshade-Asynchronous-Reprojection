@@ -451,6 +451,13 @@ public:
     // (dev, key ContinuousWarp: the continuous warp - no gaps by construction, nothing held but the HUD; see ow_tether and
     // dev/plan_continuous_warp.md)
     void set_tether(bool on) { tether_ = on; }
+    // Overscan (Settings::overscan_pct): the game's frame shows a wider view than the screen - the share of its width and height
+    // shown (1: off). The warp then draws the centre, scaled up to the output, and turns into the margin; the HUD - the UI layer
+    // and what is held as HUD - stays where the game lays it out (see ow_out_uv). Only with the continuous warp and the search
+    // (no forward splat, no low-resolution refreshes): overscan_usable() says whether the last warp drew with it.
+    void set_overscan(float shown_x, float shown_y) { overscan_[0] = shown_x; overscan_[1] = shown_y; }
+    bool overscan_wanted() const { return overscan_[0] < 0.9999f || overscan_[1] < 0.9999f; }
+    bool overscan_usable() const { return overscan_wanted() && tether_ && !warp_splat_ && !lowres_between_; }
     void set_tether_iterations(int coarse, int fine, int fine_from) { tether_iters_ = coarse; tether_iters_fine_ = fine; tether_fine_ = fine_from; }  // (dev: the solver's passes per step)
     bool tether() const { return tether_; }
     void set_tether_block(int b) { tether_block_ = b; }  // (dev: the solve's block in rendered px, 0 by the render size)
@@ -678,6 +685,7 @@ private:
     bool ensure_hud_gate();
     ComPtr<ID3D12PipelineState> cs_gen_depth_, cs_gen_unui_, cs_hudless_clear_, cs_hudless_count_, cs_hudless_score_, cs_hudless_fill_, cs_layer_hud_, cs_layer_check_clear_, cs_layer_check_, cs_obj_join_init_, cs_obj_join_, cs_obj_join_final_, cs_still_, cs_hold_fill_, cs_grow_init_, cs_grow_clear_, cs_grow_, cs_grow_final_, cs_copy4_;
     bool warp_splat_ = false;  // set_warp_splat
+    float overscan_[2] = {1.0f, 1.0f};  // set_overscan: the share of the frame's width, height shown
     bool rig_check_ = false;   // set_rig_check
     bool still_reset_ = false; // hold_characters: the score starts over
     // hold_characters' growing along depth: the held area's size on the half grid (read back), its buffers

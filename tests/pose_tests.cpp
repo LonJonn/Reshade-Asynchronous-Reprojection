@@ -244,6 +244,42 @@ static void input_turn_matches_camera() {
     EXPECT(worst < 1e-4, "the camera turned back by the input turn matches the previous camera (worst %.2e)", worst);
 }
 
+// Overscan (crop_reach): the shown crop's corners, turned with the camera, against the frame's edge - for a forward and a
+// reversed-depth projection. No turn: the crop itself. A yaw of d: each corner's view direction turned by d, projected again
+// (worked out here on its own). A turn past 90 degrees: behind the frame's camera.
+static void crop_reach_tests() {
+    const double p00 = 0.5455, p11 = 1.3032, n = 0.1, f = 1000.0;  // (Anomaly at 3440x1440, vertical FOV 75)
+    const float forward[16] = {float(p00), 0, 0, 0, 0, float(p11), 0, 0, 0, 0, float(f / (f - n)), 1, 0, 0, float(-n * f / (f - n)), 0};
+    const float reversed[16] = {float(p00), 0, 0, 0, 0, float(p11), 0, 0, 0, 0, 0, 1, 0, 0, float(n), 0};
+    for (const float* pm : {forward, reversed}) {
+        Mat4 proj;
+        for (int i = 0; i < 16; ++i) proj[i] = pm[i];
+        const double z_sign = view_z_sign(pm);
+        const CameraBasis cur = camera_at(0.4, 0.0);  // (level: a yaw about world up is then a turn about the camera's own up)
+        const Mat4 view_src = view_matrix(cur, cur.pos, z_sign);
+        const double s = 1.0 / 1.1;  // (5% a side)
+        double r[2];
+        EXPECT(crop_reach(clip_to_source_rotation(proj, view_src, view_src), s, r) && std::fabs(r[0] - s) < 1e-5 && std::fabs(r[1] - s) < 1e-5,
+               "no turn: the crop reaches %.4f, %.4f (want %.4f)", r[0], r[1], s);
+        for (const double d : {0.05, -0.12}) {
+            const CameraBasis turned = apply_rotation(cur, kUp, d, 0.0, cur.pos);
+            const bool ok = crop_reach(clip_to_source_rotation(proj, view_matrix(turned, cur.pos, z_sign), view_src), s, r);
+            double want[2] = {0, 0};
+            for (const double tx : {s / p00, -s / p00}) {
+                const double x = tx * std::cos(d) + std::sin(d), z = -tx * std::sin(d) + std::cos(d);
+                want[0] = std::max(want[0], std::fabs(p00 * x / z));
+                want[1] = std::max(want[1], std::fabs(p11 * (s / p11) / z));
+            }
+            EXPECT(ok && std::fabs(r[0] - want[0]) < 2e-3 * want[0] && std::fabs(r[1] - want[1]) < 2e-3 * want[1],
+                   "yaw %.2f: the crop reaches %.4f, %.4f (want %.4f, %.4f)", d, r[0], r[1], want[0], want[1]);
+            EXPECT(r[0] > s, "yaw %.2f: a turn takes the crop further out (%.4f)", d, r[0]);
+        }
+        const CameraBasis away = apply_rotation(cur, kUp, 3.0, 0.0, cur.pos);
+        EXPECT(!crop_reach(clip_to_source_rotation(proj, view_matrix(away, cur.pos, z_sign), view_src), s, r),
+               "turned away: the crop lies behind the frame's camera");
+    }
+}
+
 // Driving: stretches where the camera turns by itself (steering, no input) between ones turned by the mouse. The fit keeps
 // the mouse's gain (the steering frames are left out of it), and the prediction counts the camera's own turn going on as
 // the rest - not the input's - once the input is a while past.
@@ -592,6 +628,7 @@ int main() {
     fit_recovers_smoothed_camera();
     prediction_is_accurate_and_continuous();
     input_turn_matches_camera();
+    crop_reach_tests();
     driving_keeps_gain();
     cursor_gate_blocks_mouse();
     auto_latency_tracks_frame_interval();
